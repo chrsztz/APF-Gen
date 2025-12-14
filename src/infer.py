@@ -31,7 +31,16 @@ def forward_pass(model, main, phys, mask, phys_lambda, top_k: int):
     return preds, combined, attn
 
 
-def run_inference(config_path: str, checkpoint: str, input_path: str, xml_out: str, top_k: int, use_beam: bool, midi_split: int = 60):
+def run_inference(
+    config_path: str,
+    checkpoint: str,
+    input_path: str,
+    xml_out: str,
+    top_k: int,
+    use_beam: bool,
+    xml_template: str = None,
+    midi_split: int = 60,
+):
     cfg = load_config(config_path)
     device = torch.device(cfg["train"]["device"] if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(checkpoint, map_location=device)
@@ -116,8 +125,18 @@ def run_inference(config_path: str, checkpoint: str, input_path: str, xml_out: s
 
     print("Predicted finger sequence (idx->finger):", fingers)
     if xml_out:
-        if input_path.lower().endswith((".xml", ".musicxml", ".mxl")) and xml_tree is not None:
-            out_path = xml_out
+        out_path = xml_out
+        if xml_template:
+            tpl_events, tpl_tree = parse_musicxml(xml_template)
+            if len(tpl_events) != len(fingers):
+                min_len = min(len(tpl_events), len(fingers))
+                print(
+                    f"Warning: template notes ({len(tpl_events)}) != predicted fingers ({len(fingers)}); truncating to {min_len}"
+                )
+                tpl_events = tpl_events[:min_len]
+                fingers = fingers[:min_len]
+            write_fingerings_to_musicxml(tpl_tree, fingers, tpl_events, out_path)
+        elif input_path.lower().endswith((".xml", ".musicxml", ".mxl")) and xml_tree is not None:
             write_fingerings_to_musicxml(xml_tree, fingers, events, out_path)
         else:
             out_path = predictions_to_musicxml(events, preds_idx, xml_out)
@@ -130,8 +149,23 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default="outputs/checkpoints/best.pt")
     parser.add_argument("--input", type=str, required=True, help="Path to a PIG txt, MusicXML, or MIDI file")
     parser.add_argument("--xml-out", type=str, default="outputs/musicxml/output.musicxml")
+    parser.add_argument(
+        "--xml-template",
+        type=str,
+        default=None,
+        help="Optional MusicXML/MXL template to receive predicted fingerings when input is not XML",
+    )
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--beam", action="store_true", help="Use beam search decoding with physical costs")
     parser.add_argument("--midi-split", type=int, default=60, help="Pitch threshold to split hands for single-track MIDI")
     args = parser.parse_args()
-    run_inference(args.config, args.checkpoint, args.input, args.xml_out, args.top_k, args.beam, args.midi_split)
+    run_inference(
+        args.config,
+        args.checkpoint,
+        args.input,
+        args.xml_out,
+        args.top_k,
+        args.beam,
+        args.xml_template,
+        args.midi_split,
+    )

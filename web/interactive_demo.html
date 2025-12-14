@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PIG TXT 转 MusicXML 交互预览</title>
+    <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --card: #111827;
+        --accent: #22d3ee;
+        --accent-2: #8b5cf6;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --border: #1f2937;
+      }
+      .actions-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        color: var(--text);
+        background: radial-gradient(circle at 20% 20%, rgba(34, 211, 238, 0.08), transparent 35%),
+          radial-gradient(circle at 80% 0%, rgba(139, 92, 246, 0.08), transparent 30%),
+          var(--bg);
+      }
+      header {
+        padding: 24px clamp(16px, 4vw, 40px);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(22px, 3vw, 28px);
+        letter-spacing: -0.02em;
+      }
+      .pill {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        color: #0b1021;
+        font-weight: 700;
+        font-size: 13px;
+      }
+      main {
+        padding: 0 clamp(16px, 4vw, 40px) 32px;
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) 1fr;
+        gap: 20px;
+      }
+      @media (max-width: 960px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+      }
+      label {
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 6px;
+        display: block;
+      }
+      input,
+      select,
+      button,
+      textarea {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0b1221;
+        color: var(--text);
+        padding: 10px 12px;
+        font-size: 14px;
+        outline: none;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.2);
+      }
+      textarea {
+        min-height: 140px;
+        resize: vertical;
+        line-height: 1.5;
+        font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      button {
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        border: none;
+        font-weight: 700;
+        cursor: pointer;
+        transition: transform 0.08s ease, box-shadow 0.1s ease;
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      .ghost {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+        margin: 4px 0 0;
+      }
+      #viewer {
+        width: 100%;
+        min-height: 480px;
+        background: #0b1021;
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        overflow: auto;
+        padding: 12px;
+      }
+      /* 反色显示，便于暗背景下查看白色谱面 */
+      .invert svg {
+        filter: invert(1) hue-rotate(180deg) brightness(1.05);
+        background: transparent !important;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 10px;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 6px rgba(34, 211, 238, 0.12);
+      }
+      .error {
+        color: #f87171;
+      }
+      .success {
+        color: #34d399;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>TXT → MusicXML 交互预览</h1>
+      <span class="pill">Modern · OSMD</span>
+    </header>
+    <main>
+      <section class="card">
+        <div style="display:flex; justify-content: space-between; align-items:center; gap:8px;">
+          <div>
+            <div style="font-weight:700; font-size:16px;">参数与上传</div>
+            <div class="muted">上传 PIG txt，选择拍号 / 最小时值，生成 MusicXML 并预览</div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <label for="bpm">BPM</label>
+          <input id="bpm" type="number" value="120" min="20" max="300" />
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div>
+            <label for="ts">拍号</label>
+            <select id="ts">
+              <option value="4/4">4/4</option>
+              <option value="3/4">3/4</option>
+              <option value="2/4">2/4</option>
+              <option value="6/8">6/8</option>
+            </select>
+          </div>
+          <div>
+            <label for="minnote">最小时值</label>
+            <select id="minnote">
+              <option value="1/16" selected>1/16</option>
+              <option value="1/8">1/8</option>
+              <option value="1/32">1/32</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <label for="file">上传 txt（PIG 格式）</label>
+          <input id="file" type="file" accept=".txt" />
+          <div class="muted">或直接粘贴内容：</div>
+          <textarea id="txtarea" placeholder="粘贴 PIG txt 内容（含 finger 列）"></textarea>
+        </div>
+
+        <div class="actions">
+          <button id="convertBtn">转换并预览</button>
+          <button class="ghost" id="loadSample">填入示例</button>
+        </div>
+        <div class="actions-row">
+          <button class="ghost" id="downloadBtn" style="flex:1;">下载 MusicXML</button>
+          <div class="chip">转换后可下载 .musicxml 导入其他软件</div>
+        </div>
+        <div class="status" id="status">
+          <span class="dot"></span><span>等待上传...</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px;">
+          <div style="font-weight:700; font-size:16px;">OSMD 预览</div>
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; color: var(--muted);">
+            <input id="invertToggle" type="checkbox" checked />
+            反色显示
+          </label>
+        </div>
+        <div id="viewer" class="invert"></div>
+      </section>
+    </main>
+
+    <script>
+      const apiBase = "http://localhost:8000";
+      const statusEl = document.getElementById("status");
+      const viewer = document.getElementById("viewer");
+      const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(viewer, {
+        drawFingerings: true,
+        autoResize: true,
+      });
+
+      function setStatus(text, cls = "") {
+        statusEl.innerHTML = `<span class="dot"></span><span class="${cls}">${text}</span>`;
+      }
+
+      let lastXml = "";
+
+      async function getTxtFromFileInput() {
+        const file = document.getElementById("file").files[0];
+        if (!file) return "";
+        const buf = await file.arrayBuffer();
+        return new TextDecoder().decode(buf);
+      }
+
+      function getTxtFromTextarea() {
+        return document.getElementById("txtarea").value.trim();
+      }
+
+      async function convert() {
+        try {
+          setStatus("读取文件中...");
+          const fileTxt = await getTxtFromFileInput();
+          const pasted = getTxtFromTextarea();
+          const txt = pasted || fileTxt;
+          if (!txt) {
+            setStatus("请先上传或粘贴 txt 内容", "error");
+            return;
+          }
+
+          const payload = {
+            txt,
+            bpm: Number(document.getElementById("bpm").value) || 120,
+            time_signature: document.getElementById("ts").value,
+            min_note: document.getElementById("minnote").value,
+          };
+          setStatus("转换中...");
+          const resp = await fetch(`${apiBase}/convert`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!resp.ok) {
+            const msg = await resp.text();
+            setStatus(`转换失败: ${msg}`, "error");
+            return;
+          }
+          const data = await resp.json();
+          setStatus("加载乐谱...");
+          await osmd.load(data.xml);
+          await osmd.render();
+          lastXml = data.xml;
+          setStatus("完成", "success");
+        } catch (err) {
+          console.error(err);
+          setStatus(`错误: ${err}`, "error");
+        }
+      }
+
+      document.getElementById("convertBtn").addEventListener("click", convert);
+
+      document.getElementById("invertToggle").addEventListener("change", (e) => {
+        if (e.target.checked) {
+          viewer.classList.add("invert");
+        } else {
+          viewer.classList.remove("invert");
+        }
+      });
+
+      document.getElementById("loadSample").addEventListener("click", () => {
+        const sample = `0\t0.156289\t0.302811\tC4\t64\t80\t0\t1
+1\t0.312579\t0.4591\tD4\t64\t80\t0\t2
+2\t0.468869\t0.61539\tE4\t64\t80\t0\t3
+3\t0.625158\t0.771679\tF4\t64\t80\t0\t4
+4\t0.781447\t0.927969\tD4\t64\t80\t0\t2
+5\t0.937737\t1.08426\tE4\t64\t80\t0\t3
+6\t1.09403\t1.24055\tC4\t64\t80\t0\t1
+7\t1.25032\t1.54397\tG4\t64\t80\t0\t4`;
+        document.getElementById("txtarea").value = sample;
+        setStatus("已填入示例，点击转换预览", "success");
+      });
+
+      document.getElementById("downloadBtn").addEventListener("click", () => {
+        if (!lastXml) {
+          setStatus("请先转换，再下载", "error");
+          return;
+        }
+        const blob = new Blob([lastXml], { type: "application/vnd.recordare.musicxml+xml" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "output.musicxml";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setStatus("已下载 MusicXML", "success");
+      });
+    </script>
+  </body>
+</html>
+

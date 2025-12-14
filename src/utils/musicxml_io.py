@@ -103,9 +103,58 @@ def parse_musicxml(path: str):
                 time_sec += dur * sec_per_div
 
     events.sort(key=lambda e: (e.onset, e.midi))
+    events = _merge_tied_notes(events)
     for i, ev in enumerate(events):
         ev.idx = i
     return events, tree
+
+
+def _merge_tied_notes(events: List[NoteEvent]) -> List[NoteEvent]:
+    """Merge same-pitch ties (tie/tied tags) into a single event so fingering aligns."""
+
+    def _tie_flags(note_el: ET.Element):
+        if note_el is None:
+            return False, False
+        tags = list(note_el.findall("tie")) + list(note_el.findall("notations/tied"))
+        types = {t.get("type") for t in tags}
+        return "start" in types, "stop" in types
+
+    merged: List[NoteEvent] = []
+    active: dict[tuple[int, int], NoteEvent] = {}  # (channel, midi) -> accumulated event
+
+    for ev in events:
+        note_el = getattr(ev, "note_ref", None)
+        tie_start, tie_stop = _tie_flags(note_el)
+        key = (ev.channel, ev.midi)
+
+        # No tie info, flush normally
+        if not tie_start and not tie_stop:
+            merged.append(ev)
+            continue
+
+        # start or middle of a tie chain
+        if tie_start:
+            base = active.get(key, ev)
+            # extend duration if already tracking
+            base.offset = max(base.offset, ev.offset)
+            active[key] = base
+            if tie_stop:
+                # this note both stops previous and starts next; keep tracking
+                active[key] = base
+            continue
+
+        # only tie_stop: close the chain if present
+        if tie_stop and key in active:
+            base = active.pop(key)
+            base.offset = max(base.offset, ev.offset)
+            merged.append(base)
+        else:
+            # stop without start; emit as-is
+            merged.append(ev)
+
+    # flush any unterminated ties
+    merged.extend(active.values())
+    return merged
 
 
 def write_fingerings_to_musicxml(tree: ET.ElementTree, fingerings: List[int], events: List[NoteEvent], out_path: str):
