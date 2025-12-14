@@ -1,0 +1,53 @@
+data:
+  root: "/home/ztz/Desktop/finger/PIGdata/FingeringFiles"
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  feature_type: "physical"  # options: base, word2vec, physical
+  word2vec_dim: 16
+  velocity_threshold: 80
+
+model:
+  arch: "cnn_bilstm"  # options: cnn_bilstm, transformer
+  hidden_size: 192
+  cnn_channels: 64
+  cnn_layers: 2
+  lstm_layers: 2
+  dropout: 0.2
+  phys_lambda: 0.3
+  num_classes: 11
+  attention: true
+  d_model: 128
+  nhead: 4
+  tf_layers: 2
+
+train:
+  batch_size: 32
+  lr: 0.005
+  weight_decay: 1.0e-5
+  epochs: 200
+  early_stop_patience: 10
+  scheduler_factor: 0.5
+  scheduler_patience: 3
+  num_workers: 2
+  device: "cuda"
+  log_interval: 20
+
+inference:
+  top_k: 3
+  planning_depth: 1
+  output_dir: "outputs"
+
+decoder:
+  use_beam_eval: true
+  beam_size: 5
+  alpha: 0.1
+  beta: 0.05
+
+metrics:
+  soft_tolerance: 0
+  report_confusion: true
+  error_dump_limit: 200
+  error_dump_path: "outputs/eval_errors.csv"
+

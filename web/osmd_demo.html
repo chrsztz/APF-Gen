@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>OSMD Fingering Demo</title>
+    <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
+    <style>
+      body { font-family: sans-serif; margin: 1rem; background: #f6f6f6; }
+      #viewer { border: 1px solid #ccc; padding: 0.5rem; background: #fff; }
+      #dropzone { border: 2px dashed #aaa; padding: 1rem; margin-bottom: 1rem; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <h2>OpenSheetMusicDisplay Fingering Preview</h2>
+    <p>Load a MusicXML produced by <code>infer.py --xml-out ...</code> to see fingerings above the score.</p>
+    <div id="dropzone">
+      <input type="file" id="file" accept=".xml,.musicxml" />
+      <p>Choose or drop a MusicXML file.</p>
+    </div>
+    <div id="viewer"></div>
+    <script>
+      const container = document.getElementById("viewer");
+      const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
+        drawFingerings: true,
+      });
+
+      async function loadFile(file) {
+        const data = await file.arrayBuffer();
+        await osmd.load(data);
+        await osmd.render();
+      }
+
+      document.getElementById("file").addEventListener("change", (e) => {
+        if (e.target.files && e.target.files[0]) {
+          loadFile(e.target.files[0]);
+        }
+      });
+    </script>
+  </body>
+</html>
+
+
