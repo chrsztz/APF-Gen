@@ -7,6 +7,10 @@ data:
   feature_type: "physical"  # options: base, word2vec, physical
   word2vec_dim: 16
   velocity_threshold: 80
+  use_spatial: true
+  use_temporal: true
+  use_hand: true
+  use_fingering: true
 
 model:
   arch: "cnn_bilstm"  # options: cnn_bilstm, transformer
@@ -26,7 +30,7 @@ train:
   batch_size: 32
   lr: 0.005
   weight_decay: 1.0e-5
-  epochs: 200
+  epochs: 40
   early_stop_patience: 10
   scheduler_factor: 0.5
   scheduler_patience: 3
@@ -46,7 +50,7 @@ decoder:
   beta: 0.05
 
 metrics:
-  soft_tolerance: 0
+  soft_tolerance: 1
   report_confusion: true
   error_dump_limit: 200
   error_dump_path: "outputs/eval_errors.csv"

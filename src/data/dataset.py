@@ -76,7 +76,15 @@ def create_dataloaders(
     seed: int = 42,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, FeatureBuilder, Dict[str, List[NoteEvent]]]:
     pieces = load_pig_dataset(root)
-    builder = FeatureBuilder(feature_type=feature_type, word2vec_dim=word2vec_dim, velocity_threshold=velocity_threshold)
+    builder = FeatureBuilder(
+        feature_type=feature_type,
+        word2vec_dim=word2vec_dim,
+        velocity_threshold=velocity_threshold,
+        use_spatial=feature_type != "base",
+        use_temporal=feature_type != "base",
+        use_hand=feature_type != "base",
+        use_fingering=feature_type != "base",
+    )
     if feature_type == "word2vec":
         builder.fit_word2vec(pieces)
     train_ids, val_ids, test_ids = split_pieces(pieces, train_ratio, val_ratio, test_ratio, seed)

@@ -9,6 +9,8 @@ def convert_txt_to_musicxml(
     time_signature: str = "4/4",
     min_note: str = "1/16",
     divisions: int = 480,
+    pickup_beats: float = 0.0,
+    staff_split_midi: int = 60,
 ) -> str:
     """
     Convert a PIG-format txt (onset/offset seconds + pitch + finger) to MusicXML.
@@ -28,30 +30,38 @@ def convert_txt_to_musicxml(
     grid = _grid_from_min_note(divisions, min_den)
     sec_per_beat = 60.0 / bpm  # beat assumed as quarter note
     measure_div = int(num * divisions * 4 / den)
+    pickup_div = int(round(pickup_beats * divisions)) if pickup_beats > 0 else 0
+    measure_div_first = pickup_div if pickup_div > 0 else measure_div
 
     events = _parse_txt(txt_content)
-    # quantize onsets/durations to grid
+    # 1) 转换为 divisions 浮点，保留原始区间
+    for ev in events:
+        ev.on_div = (ev.onset / sec_per_beat) * divisions
+        ev.off_div = (ev.offset / sec_per_beat) * divisions
+    # 2) 按小节切分
     segments = []
     for ev in events:
-        onset_beats = ev.onset / sec_per_beat
-        offset_beats = ev.offset / sec_per_beat
-        onset_div = _q(round(onset_beats * divisions), grid)
-        dur_div = _q(round((offset_beats - onset_beats) * divisions), grid)
-        dur_div = max(grid, dur_div)
         segments.extend(
-                _split_across_measures(
-                onset_div,
-                dur_div,
-                ev.pitch,
-                    ev.midi,
-                ev.finger,
-                ev.channel,
+            _split_across_measures(
+                ev,
                 measure_div,
+                measure_div_first,
             )
         )
-
+    # 3) 按小节分组
     measures = _group_by_measure(segments)
-    xml_root = _build_xml(measures, divisions, num, den, bpm)
+    measure_lens = {0: measure_div_first} if pickup_div > 0 else {}
+    xml_root = _build_xml(
+        measures,
+        measure_lens,
+        measure_div,
+        divisions,
+        grid,
+        num,
+        den,
+        bpm,
+        staff_split_midi,
+    )
     return ET.tostring(xml_root, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
 
@@ -59,7 +69,19 @@ def convert_txt_to_musicxml(
 
 
 class TxtEvent:
-    __slots__ = ("idx", "onset", "offset", "pitch", "midi", "vel_on", "vel_off", "channel", "finger")
+    __slots__ = (
+        "idx",
+        "onset",
+        "offset",
+        "pitch",
+        "midi",
+        "vel_on",
+        "vel_off",
+        "channel",
+        "finger",
+        "on_div",
+        "off_div",
+    )
 
     def __init__(self, idx, onset, offset, pitch, midi, vel_on, vel_off, channel, finger):
         self.idx = idx
@@ -71,6 +93,8 @@ class TxtEvent:
         self.vel_off = vel_off
         self.channel = channel
         self.finger = finger
+        self.on_div = 0.0
+        self.off_div = 0.0
 
 
 def _parse_txt(txt_content: str) -> List[TxtEvent]:
@@ -128,40 +152,58 @@ def _q(val: int, grid: int) -> int:
 
 
 def _split_across_measures(
-    onset_div: int,
-    dur_div: int,
-    pitch: str,
-    midi: int,
-    finger: int,
-    channel: int,
+    ev: TxtEvent,
     measure_div: int,
+    measure_div_first: int,
 ):
     parts = []
-    remaining = dur_div
-    start = onset_div
+    remaining = ev.off_div - ev.on_div
+    start = ev.on_div
     first = True
+    raw_cursor = ev.on_div
+    raw_remaining = ev.off_div - raw_cursor
     while remaining > 0:
-        measure_idx = start // measure_div
-        pos_in_measure = start % measure_div
-        room = measure_div - pos_in_measure
+        measure_idx, pos_in_measure, cur_len = _locate_measure(start, measure_div, measure_div_first)
+        _, raw_pos_in_measure, raw_len_cur = _locate_measure(raw_cursor, measure_div, measure_div_first)
+        room = cur_len - pos_in_measure
+        raw_room = raw_len_cur - raw_pos_in_measure
         take = min(remaining, room)
+        raw_take = min(raw_remaining, raw_room) if raw_remaining > 0 else take
         parts.append(
             {
                 "measure": measure_idx,
                 "onset": pos_in_measure,
                 "dur": take,
-                "pitch": pitch,
-                "midi": midi,
-                "finger": finger,
-                "channel": channel,
+                "pitch": ev.pitch,
+                "midi": ev.midi,
+                "finger": ev.finger,
+                "channel": ev.channel,
                 "tie_start": not first,
                 "tie_stop": remaining > room,
+                "raw_onset_in_bar": raw_pos_in_measure,
+                "raw_offset_in_bar": raw_pos_in_measure + raw_take,
             }
         )
         remaining -= take
+        raw_remaining -= raw_take
         start += take
+        raw_cursor += raw_take
         first = False
     return parts
+
+
+def _locate_measure(pos: float, measure_div: int, measure_div_first: int):
+    if measure_div_first > 0:
+        if pos < measure_div_first:
+            return 0, pos, float(measure_div_first)
+        shifted = pos - measure_div_first
+        idx = 1 + int(shifted // measure_div)
+        local = shifted - (idx - 1) * measure_div
+        return idx, local, float(measure_div)
+    # no pickup
+    idx = int(pos // measure_div)
+    local = pos - idx * measure_div
+    return idx, local, float(measure_div)
 
 
 def _group_by_measure(segments: List[dict]):
@@ -216,7 +258,7 @@ def _pitch_to_midi(pitch: str) -> int:
     return (octave + 1) * 12 + step_map.get(step, 0) + alter
 
 
-def _choose_staff(finger: int, midi: int | None, channel: int) -> str:
+def _choose_staff(finger: int, midi: int | None, channel: int, split_midi: int) -> str:
     # finger sign overrides: >0 -> right (staff 1), <0 -> left (staff 2)
     if finger > 0:
         return "1"
@@ -224,12 +266,22 @@ def _choose_staff(finger: int, midi: int | None, channel: int) -> str:
         return "2"
     # fallback to pitch split
     if midi is not None:
-        return "1" if midi >= 60 else "2"
+        return "1" if midi >= split_midi else "2"
     # fallback to channel
     return "1" if channel == 0 else "2"
 
 
-def _build_xml(measures, divisions: int, num: int, den: int, bpm: float):
+def _build_xml(
+    measures,
+    measure_len_map: dict,
+    measure_div: int,
+    divisions: int,
+    grid: int,
+    num: int,
+    den: int,
+    bpm: float,
+    staff_split_midi: int,
+):
     root = ET.Element("score-partwise", version="3.1")
     part_list = ET.SubElement(root, "part-list")
     score_part = ET.SubElement(part_list, "score-part", id="P1")
@@ -258,29 +310,31 @@ def _build_xml(measures, divisions: int, num: int, den: int, bpm: float):
             sound = ET.SubElement(measure_el, "sound", tempo=str(bpm))
 
         segs = measures.get(m, [])
+        cur_measure_len = measure_len_map.get(m, measure_div)
         if not segs:
-            rest_note = _rest_note(divisions * num * 4 // den, divisions, voice="1")
+            rest_note = _rest_note(cur_measure_len, divisions, staff="1")
             measure_el.append(rest_note)
             continue
 
-        # group by onset within measure
-        segs.sort(key=lambda s: (s["onset"], s["pitch"]))
+        # group by onset within measure; require interval overlap to be treated as chord
+        segs.sort(key=lambda s: (s.get("raw_onset_in_bar", s["onset"]), s["onset"], s["pitch"]))
         groups = []
-        cur_onset = None
         cur = []
         for seg in segs:
-            if cur_onset is None or seg["onset"] != cur_onset:
-                if cur:
-                    groups.append((cur_onset, cur))
-                cur_onset = seg["onset"]
+            if not cur:
                 cur = [seg]
-            else:
+                continue
+            if _interval_overlap(cur[0], seg):
                 cur.append(seg)
+            else:
+                group_onset = min(n["onset"] for n in cur)
+                groups.append((group_onset, cur))
+                cur = [seg]
         if cur:
-            groups.append((cur_onset, cur))
+            group_onset = min(n["onset"] for n in cur)
+            groups.append((group_onset, cur))
 
         pointer = 0
-        measure_div = int(num * divisions * 4 / den)
         for onset, notes in groups:
             if onset > pointer:
                 gap = onset - pointer
@@ -292,7 +346,7 @@ def _build_xml(measures, divisions: int, num: int, den: int, bpm: float):
             notes.sort(key=lambda s: s["pitch"])
             max_dur = 0
             for idx, seg in enumerate(notes):
-                staff_num = _choose_staff(seg["finger"], seg.get("midi"), seg["channel"])
+                staff_num = _choose_staff(seg["finger"], seg.get("midi"), seg["channel"], staff_split_midi)
                 note_el = _note_element(
                     seg["pitch"],
                     seg["dur"],
@@ -309,8 +363,8 @@ def _build_xml(measures, divisions: int, num: int, den: int, bpm: float):
                 max_dur = max(max_dur, seg["dur"])
             pointer = onset + max_dur
 
-        if pointer < measure_div:
-            measure_el.append(_rest_note(measure_div - pointer, divisions, staff="1"))
+        if pointer < cur_measure_len:
+            measure_el.append(_rest_note(cur_measure_len - pointer, divisions, staff="1"))
 
     return root
 
@@ -366,4 +420,13 @@ def _note_element(
         technical = ET.SubElement(notations, "technical")
         ET.SubElement(technical, "fingering").text = str(finger)
     return note
+
+
+def _interval_overlap(a: dict, b: dict, tol: float = 1e-3) -> bool:
+    """Treat as chord only if raw intervals overlap."""
+    a_start = a.get("raw_onset_in_bar", a["onset"])
+    a_end = a.get("raw_offset_in_bar", a_start + a["dur"])
+    b_start = b.get("raw_onset_in_bar", b["onset"])
+    b_end = b.get("raw_offset_in_bar", b_start + b["dur"])
+    return (a_start < b_end - tol) and (b_start < a_end - tol)
 

@@ -63,3 +63,5 @@ class TransformerFingering(nn.Module):
         return main_logits, phys_logits, attn_dummy
 
 
+
+

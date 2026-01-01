@@ -207,7 +207,14 @@
               <option value="3/4">3/4</option>
               <option value="2/4">2/4</option>
               <option value="6/8">6/8</option>
+              <option value="8/9">8/9</option>
+              <option value="8/12">8/12</option>
+              <option value="custom">自定义</option>
             </select>
+            <div class="row" style="margin-top:6px; display:none;" id="tsCustomRow">
+              <input id="tsNum" type="number" min="1" placeholder="分子" />
+              <input id="tsDen" type="number" min="1" placeholder="分母" />
+            </div>
           </div>
           <div>
             <label for="minnote">最小时值</label>
@@ -217,6 +224,14 @@
               <option value="1/32">1/32</option>
             </select>
           </div>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div>
+            <label>弱起拍（可选，单位：拍）</label>
+            <input id="pickup" type="number" step="0.25" min="0" placeholder="如 0.5 表示半拍" />
+          </div>
+          <div class="muted" style="align-self:flex-end;">留空或 0 表示无弱起</div>
         </div>
 
         <div style="margin-top:14px;">
@@ -277,6 +292,17 @@
         return document.getElementById("txtarea").value.trim();
       }
 
+      function getTimeSignature() {
+        const tsSel = document.getElementById("ts").value;
+        if (tsSel === "custom") {
+          const num = Number(document.getElementById("tsNum").value);
+          const den = Number(document.getElementById("tsDen").value);
+          if (num > 0 && den > 0) return `${num}/${den}`;
+          return "4/4";
+        }
+        return tsSel;
+      }
+
       async function convert() {
         try {
           setStatus("读取文件中...");
@@ -291,8 +317,9 @@
           const payload = {
             txt,
             bpm: Number(document.getElementById("bpm").value) || 120,
-            time_signature: document.getElementById("ts").value,
+            time_signature: getTimeSignature(),
             min_note: document.getElementById("minnote").value,
+            pickup_beats: Number(document.getElementById("pickup").value) || 0,
           };
           setStatus("转换中...");
           const resp = await fetch(`${apiBase}/convert`, {
@@ -338,6 +365,15 @@
 7\t1.25032\t1.54397\tG4\t64\t80\t0\t4`;
         document.getElementById("txtarea").value = sample;
         setStatus("已填入示例，点击转换预览", "success");
+      });
+
+      document.getElementById("ts").addEventListener("change", (e) => {
+        const customRow = document.getElementById("tsCustomRow");
+        if (e.target.value === "custom") {
+          customRow.style.display = "grid";
+        } else {
+          customRow.style.display = "none";
+        }
       });
 
       document.getElementById("downloadBtn").addEventListener("click", () => {

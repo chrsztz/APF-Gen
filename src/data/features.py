@@ -123,11 +123,24 @@ def basic_features(events: List[NoteEvent], chord_flags: List[int], chord_sizes:
 
 
 class FeatureBuilder:
-    def __init__(self, feature_type: str = "physical", word2vec_dim: int = 16, velocity_threshold: int = 80):
+    def __init__(
+        self,
+        feature_type: str = "physical",
+        word2vec_dim: int = 16,
+        velocity_threshold: int = 80,
+        use_spatial: bool = True,
+        use_temporal: bool = True,
+        use_hand: bool = True,
+        use_fingering: bool = True,
+    ):
         self.feature_type = feature_type
         self.word2vec_dim = word2vec_dim
         self.velocity_threshold = velocity_threshold
         self.word2vec: Optional[Word2Vec] = None
+        self.use_spatial = use_spatial
+        self.use_temporal = use_temporal
+        self.use_hand = use_hand
+        self.use_fingering = use_fingering
 
     def fit_word2vec(self, pieces: Dict[str, List[NoteEvent]]):
         sentences = [[ev.pitch_str for ev in events] for events in pieces.values()]
@@ -154,19 +167,33 @@ class FeatureBuilder:
         events: List[NoteEvent],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         chord_flags, chord_sizes = detect_chords(events)
-        base = basic_features(events, chord_flags, chord_sizes)
-        phys = compute_physical_features(events, chord_flags, self.velocity_threshold)
+        base_full = basic_features(events, chord_flags, chord_sizes)
+        phys_full = compute_physical_features(events, chord_flags, self.velocity_threshold)
+
+        # slice physical features by category
+        # phys_full columns: [stretch, crossing, hand_pos, natural_violation, strength_violation, chord_flag]
+        phys_parts = []
+        if self.use_spatial:
+            phys_parts.append(phys_full[:, 0:2])  # stretch, crossing
+        if self.use_hand:
+            phys_parts.append(phys_full[:, 2:3])  # hand position
+        if self.use_fingering:
+            phys_parts.append(phys_full[:, 3:5])  # natural, strength
+        if self.use_temporal:
+            phys_parts.append(phys_full[:, 5:6])  # chord flag
+        phys_selected = np.concatenate(phys_parts, axis=1) if phys_parts else np.zeros_like(phys_full[:, :1])
+
         labels = np.array([FINGER_TO_IDX.get(ev.finger, FINGER_TO_IDX[0]) for ev in events], dtype=np.int64)
 
         if self.feature_type == "base":
-            main_feats = base
-            phys_feats = np.zeros_like(phys)
+            main_feats = base_full
+            phys_feats = np.zeros_like(phys_selected)
         elif self.feature_type == "word2vec":
             emb = self._pitch_embedding(events)
-            main_feats = np.concatenate([base, emb], axis=1)
-            phys_feats = np.zeros_like(phys)
-        else:
-            main_feats = np.concatenate([base, phys], axis=1)
-            phys_feats = phys
+            main_feats = np.concatenate([base_full, emb], axis=1)
+            phys_feats = np.zeros_like(phys_selected)
+        else:  # physical variants
+            main_feats = np.concatenate([base_full, phys_selected], axis=1)
+            phys_feats = phys_selected
         return main_feats, phys_feats, labels
 

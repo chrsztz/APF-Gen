@@ -10,6 +10,7 @@ class ConvertRequest(BaseModel):
     bpm: float = 120.0
     time_signature: str = "4/4"
     min_note: str = "1/16"
+    pickup_beats: float = 0.0
 
 
 app = FastAPI(title="PIG TXT to MusicXML")
@@ -38,6 +39,7 @@ async def convert(req: ConvertRequest):
             bpm=req.bpm,
             time_signature=req.time_signature,
             min_note=req.min_note,
+            pickup_beats=req.pickup_beats,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

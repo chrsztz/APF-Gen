@@ -85,3 +85,5 @@ class FingeringModel(nn.Module):
         return main_logits, phys_logits, attn_w
 
 
+
+

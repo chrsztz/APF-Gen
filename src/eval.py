@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from src.data.dataset import create_dataloaders
 from src.models.model import FingeringModel
 from src.models.transformer_model import TransformerFingering
+from src.models.ar_models import ArLSTM, ArGNN
 from src.utils.config import load_config
 from src.utils.decoder import beam_search_decode
 from src.utils.metrics import evaluate_preds
@@ -42,6 +43,23 @@ def evaluate(config_path: str, checkpoint: str):
             num_layers=cfg["model"]["tf_layers"],
             dropout=cfg["model"]["dropout"],
             num_classes=cfg["model"]["num_classes"],
+        ).to(device)
+    elif arch == "arlstm":
+        model = ArLSTM(
+            input_dim=input_dim,
+            phys_dim=phys_dim,
+            hidden_size=cfg["model"]["hidden_size"],
+            num_layers=cfg["model"]["lstm_layers"],
+            num_classes=cfg["model"]["num_classes"],
+            dropout=cfg["model"]["dropout"],
+        ).to(device)
+    elif arch == "argnn":
+        model = ArGNN(
+            input_dim=input_dim,
+            phys_dim=phys_dim,
+            hidden_size=cfg["model"]["hidden_size"],
+            num_classes=cfg["model"]["num_classes"],
+            dropout=cfg["model"]["dropout"],
         ).to(device)
     else:
         model = FingeringModel(
