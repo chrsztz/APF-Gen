@@ -31,10 +31,11 @@ python -m src.infer --config configs/default.yaml \
 The console prints predicted finger numbers. The MusicXML includes `<fingering>` tags for every note.
 Notes with tied durations in MusicXML are自动合并为一个事件，以便与 PIG txt 对齐写入指法。
 
-## Web demo (OSMD)
-- 纯预览：打开 `web/osmd_demo.html`，加载 `infer.py` 导出的 MusicXML。
-- 交互转换：`pip install -r requirements.txt && uvicorn web.app:app --reload --port 8000`，再打开 `web/interactive_demo.html`，上传 PIG txt，设置拍号/最小时值/BPM，服务端会生成量化后的 MusicXML 并在 OSMD 中预览。
-
+## Web Demo (MIDI → Fingering → MusicXML)
+```bash
+uvicorn web.app:app --reload
+```
+Open `http://127.0.0.1:8000`, upload a MIDI file, and the score will be rendered with fingerings via OpenSheetMusicDisplay.
 ## Notes
 - Config at `configs/default.yaml` controls feature type (`base`, `word2vec`, `physical`), model sizes, and training hyperparameters.
 - Word2Vec embeddings are trained on the PIG pitch sequences automatically when `feature_type=word2vec`.

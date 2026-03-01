@@ -35,8 +35,11 @@ def detect_chords(events: List[NoteEvent]) -> Tuple[List[int], List[int]]:
 def compute_physical_features(
     events: List[NoteEvent],
     chord_flags: List[int],
-    velocity_threshold: int,
 ) -> np.ndarray:
+    """Physical constraint features (velocity-independent).
+
+    Columns: [stretch, crossing, hand_pos, natural_violation, chord_flag]
+    """
     phys = []
     for i, ev in enumerate(events):
         prev_same_hand = None
@@ -61,14 +64,12 @@ def compute_physical_features(
         ]
         hand_pos = float(np.mean(active_same_time)) if active_same_time else float(ev.midi)
         natural_violation = 1.0 if (abs(ev.finger) == 1 and is_black_key(ev.midi)) else 0.0
-        strength_violation = float(ev.vel_on) if abs(ev.finger) in {4, 5} and ev.vel_on > velocity_threshold else 0.0
         phys.append(
             [
                 stretch,
                 crossing,
                 hand_pos / 127.0,
                 natural_violation,
-                strength_violation / 127.0,
                 chord_flags[i],
             ]
         )
@@ -105,13 +106,11 @@ def basic_features(events: List[NoteEvent], chord_flags: List[int], chord_sizes:
                 ev.midi / 127.0,
                 duration,
                 delta_onset,
-                ev.vel_on / 127.0,
-                ev.vel_off / 127.0,
                 ev.channel,
                 is_black_key(ev.midi),
                 chord_flags[i],
                 chord_sizes[i],
-                chord_span / 48.0,  # normalize by 4 octaves
+                chord_span / 48.0,
                 (ev.midi - prev_same) / 12.0,
                 (next_same - ev.midi) / 12.0,
                 next_onset_gap,
@@ -135,7 +134,7 @@ class FeatureBuilder:
     ):
         self.feature_type = feature_type
         self.word2vec_dim = word2vec_dim
-        self.velocity_threshold = velocity_threshold
+        self.velocity_threshold = velocity_threshold  # kept for config compat
         self.word2vec: Optional[Word2Vec] = None
         self.use_spatial = use_spatial
         self.use_temporal = use_temporal
@@ -168,19 +167,18 @@ class FeatureBuilder:
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         chord_flags, chord_sizes = detect_chords(events)
         base_full = basic_features(events, chord_flags, chord_sizes)
-        phys_full = compute_physical_features(events, chord_flags, self.velocity_threshold)
+        phys_full = compute_physical_features(events, chord_flags)
 
-        # slice physical features by category
-        # phys_full columns: [stretch, crossing, hand_pos, natural_violation, strength_violation, chord_flag]
+        # phys_full columns: [stretch, crossing, hand_pos, natural_violation, chord_flag]
         phys_parts = []
         if self.use_spatial:
             phys_parts.append(phys_full[:, 0:2])  # stretch, crossing
         if self.use_hand:
             phys_parts.append(phys_full[:, 2:3])  # hand position
         if self.use_fingering:
-            phys_parts.append(phys_full[:, 3:5])  # natural, strength
+            phys_parts.append(phys_full[:, 3:4])  # natural_violation
         if self.use_temporal:
-            phys_parts.append(phys_full[:, 5:6])  # chord flag
+            phys_parts.append(phys_full[:, 4:5])  # chord flag
         phys_selected = np.concatenate(phys_parts, axis=1) if phys_parts else np.zeros_like(phys_full[:, :1])
 
         labels = np.array([FINGER_TO_IDX.get(ev.finger, FINGER_TO_IDX[0]) for ev in events], dtype=np.int64)

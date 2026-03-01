@@ -14,7 +14,7 @@ from src.models.transformer_model import TransformerFingering
 from src.utils.config import load_config
 from src.utils.decoder import beam_search_decode
 from src.utils.musicxml_io import parse_musicxml, write_fingerings_to_musicxml
-from src.utils.midi_io import parse_midi
+from src.utils.midi_io import parse_midi_with_meta
 
 
 def forward_pass(model, main, phys, mask, phys_lambda, top_k: int):
@@ -54,11 +54,12 @@ def run_inference(
     if cfg["data"]["feature_type"] == "word2vec":
         builder.fit_word2vec(pieces)
 
+    midi_meta = None
     if input_path.lower().endswith((".xml", ".musicxml", ".mxl")):
         events, xml_tree = parse_musicxml(input_path)
     elif input_path.lower().endswith((".mid", ".midi")):
         xml_tree = None
-        events = parse_midi(input_path, split_pitch=midi_split)
+        events, midi_meta = parse_midi_with_meta(input_path, split_pitch=midi_split)
     else:
         xml_tree = None
         _, events = parse_fingering_file(input_path)
@@ -139,14 +140,19 @@ def run_inference(
         elif input_path.lower().endswith((".xml", ".musicxml", ".mxl")) and xml_tree is not None:
             write_fingerings_to_musicxml(xml_tree, fingers, events, out_path)
         else:
-            out_path = predictions_to_musicxml(events, preds_idx, xml_out)
+            out_path = predictions_to_musicxml(
+                events,
+                preds_idx,
+                xml_out,
+                midi_meta=midi_meta,
+            )
         print(f"MusicXML with fingerings written to {out_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
-    parser.add_argument("--checkpoint", type=str, default="outputs/checkpoints/best.pt")
+    parser.add_argument("--checkpoint", type=str, default="outputs_bi/checkpoints/best.pt")
     parser.add_argument("--input", type=str, required=True, help="Path to a PIG txt, MusicXML, or MIDI file")
     parser.add_argument("--xml-out", type=str, default="outputs/musicxml/output.musicxml")
     parser.add_argument(

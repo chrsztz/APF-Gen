@@ -1,5 +1,5 @@
 data:
-  root: "/home/ztz/Desktop/finger/PIGdata/FingeringFiles"
+  root: "./PIGdata/FingeringFiles"
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
@@ -11,6 +11,8 @@ data:
   use_temporal: true
   use_hand: true
   use_fingering: true
+  augment_shifts: [-12, 12]  # octave transposition augmentation (train only)
+  augment_speeds: [0.8, 0.9, 1.1, 1.2]  # tempo scaling augmentation (train only)
 
 model:
   arch: "cnn_bilstm"  # options: cnn_bilstm, transformer
@@ -35,7 +37,7 @@ train:
   scheduler_factor: 0.5
   scheduler_patience: 3
   num_workers: 2
-  device: "cuda"
+  device: "mps"
   log_interval: 20
 
 inference:

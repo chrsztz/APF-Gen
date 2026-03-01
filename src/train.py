@@ -44,6 +44,8 @@ def train(config_path: str):
         batch_size=cfg["train"]["batch_size"],
         num_workers=cfg["train"]["num_workers"],
         seed=cfg["data"]["split_seed"],
+        augment_shifts=cfg["data"].get("augment_shifts", []),
+        augment_speeds=cfg["data"].get("augment_speeds", []),
     )
 
     sample_batch = next(iter(train_loader))
