@@ -4,34 +4,74 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from src.data.dataset import create_dataloaders
+from src.data.features import FINGER_VALUES
 from src.models.model import FingeringModel
 from src.models.transformer_model import TransformerFingering
 from src.models.ar_models import ArLSTM, ArGNN
 from src.utils.config import load_config
 from src.utils.metrics import evaluate_metrics
 
+# Finger class values as a tensor (for ordinal MSE loss)
+_FINGER_T = torch.tensor(FINGER_VALUES, dtype=torch.float32)
+
 
 def compute_loss(main_logits, phys_logits, labels, mask, num_classes, phys_lambda):
-    b, t, _ = main_logits.shape
-    main_flat = main_logits.reshape(b * t, num_classes)
-    phys_flat = phys_logits.reshape(b * t, num_classes)
-    labels_flat = labels.view(-1)
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    loss_main = loss_fn(main_flat, labels_flat)
-    loss_phys = loss_fn(phys_flat, labels_flat)
-    loss = (1 - phys_lambda) * loss_main + phys_lambda * loss_phys
-    return loss, loss_main.item(), loss_phys.item()
+    """Ordinal MSE loss on expected finger value.
+
+    Instead of treating fingers as unordered classes (cross-entropy),
+    we compute the expected finger value from the softmax distribution
+    and penalise deviation from the true finger value with MSE.
+    This gives a smooth gradient that penalises "far-off" predictions
+    more than "close" ones  (e.g. predicting finger 2 when true is 3
+    costs less than predicting 5).
+    """
+    finger_vals = _FINGER_T.to(main_logits.device)
+
+    main_prob = F.softmax(main_logits, dim=-1)
+    phys_prob = F.softmax(phys_logits, dim=-1)
+
+    # Expected finger value per position: sum(prob_i * finger_i)
+    main_expected = (main_prob * finger_vals).sum(dim=-1)   # (B, T)
+    phys_expected = (phys_prob * finger_vals).sum(dim=-1)
+
+    # True finger values (padding labels → clamp to valid range)
+    labels_safe = labels.clamp(min=0, max=num_classes - 1)
+    true_fingers = finger_vals[labels_safe]                 # (B, T)
+
+    # Mask: exclude padding (-100) positions
+    valid = mask & (labels >= 0)
+    n_valid = valid.sum().clamp(min=1)
+
+    main_mse = ((main_expected - true_fingers) ** 2 * valid.float()).sum() / n_valid
+    phys_mse = ((phys_expected - true_fingers) ** 2 * valid.float()).sum() / n_valid
+
+    loss = (1 - phys_lambda) * main_mse + phys_lambda * phys_mse
+    return loss, main_mse.item(), phys_mse.item()
+
+
+def _resolve_device(cfg_device: str) -> torch.device:
+    """Pick the best available device respecting the config hint."""
+    if cfg_device == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
 def train(config_path: str):
     cfg = load_config(config_path)
-    device = torch.device(cfg["train"]["device"] if torch.cuda.is_available() else "cpu")
+    device = _resolve_device(cfg["train"]["device"])
+    print(f"Using device: {device}")
     os.makedirs("outputs/checkpoints", exist_ok=True)
+
+    # TensorBoard
+    log_dir = cfg["train"].get("tb_log_dir", "runs")
+    writer = SummaryWriter(log_dir=log_dir)
 
     train_loader, val_loader, _, builder, _ = create_dataloaders(
         root=cfg["data"]["root"],
@@ -51,6 +91,8 @@ def train(config_path: str):
     sample_batch = next(iter(train_loader))
     input_dim = sample_batch["main"].shape[-1]
     phys_dim = sample_batch["phys"].shape[-1]
+    print(f"input_dim={input_dim}, phys_dim={phys_dim}, "
+          f"train_samples={len(train_loader.dataset)}, val_samples={len(val_loader.dataset)}")
 
     arch = cfg["model"].get("arch", "cnn_bilstm")
     if arch == "transformer":
@@ -147,6 +189,14 @@ def train(config_path: str):
         metrics_mean = {k: v / max(1, len(val_loader)) for k, v in metrics_accum.items()}
         scheduler.step(avg_val)
 
+        # TensorBoard logging
+        writer.add_scalar("Loss/train", avg_train, epoch)
+        writer.add_scalar("Loss/val", avg_val, epoch)
+        writer.add_scalar("Metrics/M_gen", metrics_mean["M_gen"], epoch)
+        writer.add_scalar("Metrics/M_soft", metrics_mean["M_soft"], epoch)
+        writer.add_scalar("Metrics/M_cp", metrics_mean["M_cp"], epoch)
+        writer.add_scalar("LR", optimizer.param_groups[0]["lr"], epoch)
+
         print(
             f"Epoch {epoch+1}: train_loss={avg_train:.4f} val_loss={avg_val:.4f} "
             f"M_gen={metrics_mean['M_gen']:.2f} M_cp={metrics_mean['M_cp']:.3f}"
@@ -155,7 +205,7 @@ def train(config_path: str):
         if avg_val < best_val:
             best_val = avg_val
             patience_ctr = 0
-            ckpt_path = f"outputs/checkpoints/best.pt"
+            ckpt_path = "outputs/checkpoints/best.pt"
             torch.save(
                 {
                     "model_state": model.state_dict(),
@@ -172,10 +222,11 @@ def train(config_path: str):
                 print("Early stopping triggered.")
                 break
 
+    writer.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
     args = parser.parse_args()
     train(args.config)
-
