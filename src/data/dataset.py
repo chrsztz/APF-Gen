@@ -13,7 +13,8 @@ from .features import FeatureBuilder
 PIANO_MIN = 21
 PIANO_MAX = 108
 
-NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+# Match C++ PitchToSitch() convention: Eb (not D#), Bb (not A#)
+NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
 
 
 def _midi_to_pitch_str(midi_num: int) -> str:

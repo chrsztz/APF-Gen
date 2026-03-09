@@ -14,7 +14,9 @@ CHROMATIC_TO_FIFTHS = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5]
 
 
 def _midi_number_to_pitch_string(midi_num: int) -> str:
-    note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    # Match C++ PitchToSitch() convention used to generate PIG dataset files:
+    # pitch class 3 → "Eb" (not "D#"), pitch class 10 → "Bb" (not "A#")
+    note_names = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
     octave = (midi_num // 12) - 1
     note = note_names[midi_num % 12]
     return f"{note}{octave}"
@@ -51,9 +53,12 @@ def _parse_notes(
     non_drum = [inst for inst in midi_data.instruments if not inst.is_drum]
     has_multiple = len(non_drum) >= 2
 
-    for inst_idx, instrument in enumerate(non_drum):
+    for instrument in non_drum:
         if has_multiple:
-            channel_id = 0 if inst_idx == 0 else 1
+            # Use the actual MIDI channel number, mirroring C++ PianoRoll::ReadMIDIFile
+            # which uses (status_byte % 16) as the channel.
+            # Standard piano MIDIs: channel 0 = right hand, channel 1 = left hand.
+            channel_id = instrument.channel
         else:
             channel_id = -1
 

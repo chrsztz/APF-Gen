@@ -9,7 +9,6 @@ from .parser import NoteEvent
 FINGER_CLASSES = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]
 FINGER_TO_IDX = {f: i for i, f in enumerate(FINGER_CLASSES)}
 IDX_TO_FINGER = {i: f for f, i in FINGER_TO_IDX.items()}
-FINGER_VALUES = np.array(FINGER_CLASSES, dtype=np.float32)
 
 
 def is_black_key(midi: int) -> int:
@@ -18,40 +17,19 @@ def is_black_key(midi: int) -> int:
     return 1 if midi % 12 in {1, 3, 6, 8, 10} else 0
 
 
-def detect_chords(
-    events: List[NoteEvent], onset_tol: float = 0.03
-) -> Tuple[List[int], List[int], List[float]]:
-    """Detect chords based on near-simultaneous onset (not overlap).
-
-    Returns
-    -------
-    flags : list[int]   – 1 if note is part of a chord, else 0
-    sizes : list[int]   – number of same-hand notes starting simultaneously
-    positions : list[float] – note's pitch rank within its chord
-                              (0.0 = lowest, 1.0 = highest, 0.0 for single notes)
-    """
-    n = len(events)
-    flags = [0] * n
-    sizes = [1] * n
-    positions = [0.0] * n
-
+def detect_chords(events: List[NoteEvent]) -> Tuple[List[int], List[int]]:
+    flags = [0] * len(events)
+    sizes = [1] * len(events)
     for i, ev in enumerate(events):
-        chord_midis = [ev.midi]
+        overlap = 1
         for j, other in enumerate(events):
             if i == j:
                 continue
-            if ev.channel == other.channel and abs(ev.onset - other.onset) < onset_tol:
-                chord_midis.append(other.midi)
-
-        sz = len(chord_midis)
-        sizes[i] = sz
-        if sz > 1:
-            flags[i] = 1
-            sorted_midis = sorted(chord_midis)
-            rank = sorted_midis.index(ev.midi)
-            positions[i] = rank / (sz - 1)
-
-    return flags, sizes, positions
+            if ev.channel == other.channel and other.onset < ev.offset and ev.onset < other.offset:
+                flags[i] = 1
+                overlap += 1
+        sizes[i] = overlap
+    return flags, sizes
 
 
 def compute_physical_features(
@@ -98,65 +76,45 @@ def compute_physical_features(
     return np.asarray(phys, dtype=np.float32)
 
 
-def basic_features(
-    events: List[NoteEvent],
-    chord_flags: List[int],
-    chord_sizes: List[int],
-    chord_positions: List[float],
-) -> np.ndarray:
-    """Basic note-level features (14 dims).
-
-    Added vs previous version:
-      - delta_pitch_prev: interval to immediately previous note (any hand)
-      - chord_position: pitch rank within chord (0=lowest, 1=highest)
-    """
+def basic_features(events: List[NoteEvent], chord_flags: List[int], chord_sizes: List[int]) -> np.ndarray:
     feats = []
     prev_onset = events[0].onset if events else 0.0
     for i, ev in enumerate(events):
         duration = ev.offset - ev.onset
         delta_onset = ev.onset - prev_onset if i > 0 else 0.0
-
+        # context: previous/next same-hand midi deltas
         prev_same = next_same = ev.midi
         next_onset_gap = 0.0
+        # previous same hand
         for j in range(i - 1, -1, -1):
             if events[j].channel == ev.channel:
                 prev_same = events[j].midi
                 break
+        # next same hand
         for j in range(i + 1, len(events)):
             if events[j].channel == ev.channel:
                 next_same = events[j].midi
                 next_onset_gap = events[j].onset - ev.onset
                 break
-
-        # Delta pitch to the immediately previous note (regardless of hand)
-        prev_midi = events[i - 1].midi if i > 0 else ev.midi
-        delta_pitch_prev = (ev.midi - prev_midi) / 12.0
-
         beat_frac = ev.onset - math.floor(ev.onset)
         chord_span = 0
-        same_hand_midis = [
-            other.midi for other in events
-            if other.channel == ev.channel and other.onset < ev.offset and ev.onset < other.offset
-        ]
+        same_hand_midis = [other.midi for other in events if other.channel == ev.channel and other.onset < ev.offset and ev.onset < other.offset]
         if same_hand_midis:
             chord_span = max(same_hand_midis) - min(same_hand_midis)
-
         feats.append(
             [
-                ev.midi / 127.0,               # 0  absolute pitch
-                duration,                       # 1  note duration
-                delta_onset,                    # 2  time since previous note
-                ev.channel,                     # 3  hand (0=RH, 1=LH)
-                is_black_key(ev.midi),          # 4  black key flag
-                chord_flags[i],                 # 5  is part of chord
-                chord_sizes[i],                 # 6  chord size
-                chord_span / 48.0,              # 7  chord pitch span
-                chord_positions[i],             # 8  position within chord (NEW)
-                (ev.midi - prev_same) / 12.0,   # 9  interval to prev same-hand
-                (next_same - ev.midi) / 12.0,   # 10 interval to next same-hand
-                delta_pitch_prev,               # 11 interval to prev note any hand (NEW)
-                next_onset_gap,                 # 12 time to next same-hand note
-                beat_frac,                      # 13 beat position
+                ev.midi / 127.0,
+                duration,
+                delta_onset,
+                ev.channel,
+                is_black_key(ev.midi),
+                chord_flags[i],
+                chord_sizes[i],
+                chord_span / 48.0,
+                (ev.midi - prev_same) / 12.0,
+                (next_same - ev.midi) / 12.0,
+                next_onset_gap,
+                beat_frac,
             ]
         )
         prev_onset = ev.onset
@@ -207,8 +165,8 @@ class FeatureBuilder:
         self,
         events: List[NoteEvent],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        chord_flags, chord_sizes, chord_positions = detect_chords(events)
-        base_full = basic_features(events, chord_flags, chord_sizes, chord_positions)
+        chord_flags, chord_sizes = detect_chords(events)
+        base_full = basic_features(events, chord_flags, chord_sizes)
         phys_full = compute_physical_features(events, chord_flags)
 
         # phys_full columns: [stretch, crossing, hand_pos, natural_violation, chord_flag]
@@ -236,3 +194,4 @@ class FeatureBuilder:
             main_feats = np.concatenate([base_full, phys_selected], axis=1)
             phys_feats = phys_selected
         return main_feats, phys_feats, labels
+
