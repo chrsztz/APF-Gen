@@ -43,6 +43,11 @@
         color: #6b7280;
         margin-bottom: 12px;
       }
+      #fileTypeHint {
+        font-size: 12px;
+        color: #9ca3af;
+        margin-top: 2px;
+      }
       #osmd-container {
         border: 1px solid #e5e7eb;
         border-radius: 8px;
@@ -54,17 +59,18 @@
   </head>
   <body>
     <h1>PIG Fingering Demo</h1>
-    <div id="status">Upload a MIDI file and run inference.</div>
+    <div id="status">Upload a MIDI or PIG .txt file and run inference.</div>
     <div class="panel">
       <div>
-        <label for="midiFile">MIDI file</label>
-        <input id="midiFile" type="file" accept=".mid,.midi" />
+        <label for="inputFile">File (MIDI or PIG .txt)</label>
+        <input id="inputFile" type="file" />
+        <div id="fileTypeHint">—</div>
       </div>
       <div>
         <label for="topK">top_k</label>
         <input id="topK" type="number" value="3" min="1" max="10" />
       </div>
-      <div>
+      <div id="midiSplitWrap">
         <label for="midiSplit">midi_split</label>
         <input id="midiSplit" type="number" value="60" min="0" max="127" />
       </div>
@@ -87,48 +93,75 @@
     <div id="osmd-container"></div>
 
     <script>
-      const statusEl = document.getElementById("status");
-      const runBtn   = document.getElementById("runBtn");
-      const zoomSel  = document.getElementById("zoom");
+      const statusEl      = document.getElementById("status");
+      const runBtn        = document.getElementById("runBtn");
+      const zoomSel       = document.getElementById("zoom");
+      const fileInput     = document.getElementById("inputFile");
+      const fileTypeHint  = document.getElementById("fileTypeHint");
+      const midiSplitWrap = document.getElementById("midiSplitWrap");
 
-      /* ---- Create OSMD with compact drawing parameters ---- */
       const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("osmd-container", {
         autoResize: true,
         drawTitle: true,
-        drawingParameters: "compact",    // tighter spacing
+        drawingParameters: "compact",
         drawPartNames: true,
         drawFingerings: true,
       });
 
-      /* Rerender on zoom change */
+      function isMidi(name) {
+        return /\.(mid|midi)$/i.test(name);
+      }
+      function isTxt(name) {
+        return /\.txt$/i.test(name);
+      }
+
+      fileInput.addEventListener("change", () => {
+        const f = fileInput.files[0];
+        if (!f) { fileTypeHint.textContent = "—"; return; }
+        if (isMidi(f.name)) {
+          fileTypeHint.textContent = "Detected: MIDI";
+          midiSplitWrap.style.display = "";
+        } else if (isTxt(f.name)) {
+          fileTypeHint.textContent = "Detected: PIG txt";
+          midiSplitWrap.style.display = "none";
+        } else {
+          fileTypeHint.textContent = "Unknown format — expected .mid/.midi or .txt";
+        }
+      });
+
       zoomSel.addEventListener("change", async () => {
-        if (!osmd.graphic) return;           // nothing loaded yet
+        if (!osmd.graphic) return;
         osmd.zoom = parseFloat(zoomSel.value);
         await osmd.render();
       });
 
       async function runInference() {
-        const fileInput = document.getElementById("midiFile");
-        const topK      = document.getElementById("topK").value;
-        const midiSplit  = document.getElementById("midiSplit").value;
-        const beam       = document.getElementById("beam").checked;
-
-        if (!fileInput.files.length) {
-          statusEl.textContent = "Please select a MIDI file first.";
+        const f = fileInput.files[0];
+        if (!f) {
+          statusEl.textContent = "Please select a file first.";
           return;
         }
 
-        const formData = new FormData();
-        formData.append("file", fileInput.files[0]);
-        formData.append("top_k", topK);
-        formData.append("midi_split", midiSplit);
-        formData.append("beam", beam ? "true" : "false");
+        let endpoint, formData;
+        formData = new FormData();
+        formData.append("file", f);
+        formData.append("top_k", document.getElementById("topK").value);
+        formData.append("beam", document.getElementById("beam").checked ? "true" : "false");
+
+        if (isMidi(f.name)) {
+          endpoint = "/api/infer";
+          formData.append("midi_split", document.getElementById("midiSplit").value);
+        } else if (isTxt(f.name)) {
+          endpoint = "/api/infer_txt";
+        } else {
+          statusEl.textContent = "Unsupported file type. Use .mid/.midi or .txt";
+          return;
+        }
 
         runBtn.disabled = true;
-        statusEl.textContent = "Running inference… (music21 processing may take a few seconds)";
-
+        statusEl.textContent = "Running inference…";
         try {
-          const resp = await fetch("/api/infer", { method: "POST", body: formData });
+          const resp = await fetch(endpoint, { method: "POST", body: formData });
           if (!resp.ok) {
             const err = await resp.text();
             throw new Error(err || "Inference failed.");

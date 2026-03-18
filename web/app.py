@@ -14,6 +14,7 @@ from src.infer import forward_pass
 from src.models.model import FingeringModel
 from src.models.transformer_model import TransformerFingering
 from src.utils.config import load_config
+from src.data.parser import parse_fingering_file
 from src.utils.decoder import beam_search_decode
 from src.utils.midi_io import parse_midi_with_meta
 
@@ -24,15 +25,6 @@ CONFIG_PATH = os.getenv("PIG_CONFIG", "configs/default.yaml")
 CHECKPOINT_PATH = os.getenv("PIG_CHECKPOINT", "outputs_bi/checkpoints/best.pt")
 
 app = FastAPI(title="PIG Fingering Demo")
-
-
-def _load_html() -> str:
-    if not HTML_PATH.exists():
-        return "<h3>interactive_demo.html not found.</h3>"
-    return HTML_PATH.read_text(encoding="utf-8")
-
-
-HTML_CONTENT = _load_html()
 
 
 def _init_engine():
@@ -156,9 +148,51 @@ def _midi_bytes_to_musicxml(midi_bytes: bytes, midi_split: int, top_k: int, use_
             os.remove(tmp_xml_path)
 
 
+def _pig_txt_to_musicxml(txt_bytes: bytes, top_k: int, use_beam: bool) -> str:
+    tmp_txt_path = None
+    tmp_xml_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="wb") as tmp:
+            tmp.write(txt_bytes)
+            tmp_txt_path = tmp.name
+
+        _, events = parse_fingering_file(tmp_txt_path)
+        if not events:
+            raise HTTPException(status_code=400, detail="No note events found in PIG txt file.")
+
+        preds_idx = _predict_finger_indices(events, top_k=top_k, use_beam=use_beam)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".musicxml") as tmp_xml:
+            tmp_xml_path = tmp_xml.name
+        predictions_to_musicxml(events, preds_idx, tmp_xml_path, title="PIG Fingering Demo")
+        return Path(tmp_xml_path).read_text(encoding="utf-8")
+    finally:
+        if tmp_txt_path and os.path.exists(tmp_txt_path):
+            os.remove(tmp_txt_path)
+        if tmp_xml_path and os.path.exists(tmp_xml_path):
+            os.remove(tmp_xml_path)
+
+
+@app.post("/api/infer_txt")
+async def infer_txt(
+    file: UploadFile = File(...),
+    top_k: int = Form(3),
+    beam: bool = Form(False),
+):
+    if not file.filename.lower().endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Please upload a PIG fingering .txt file.")
+    txt_bytes = await file.read()
+    if not txt_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    xml_text = _pig_txt_to_musicxml(txt_bytes, top_k=top_k, use_beam=beam)
+    return Response(content=xml_text, media_type="application/xml")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTML_CONTENT
+    if not HTML_PATH.exists():
+        return HTMLResponse("<h3>interactive_demo.html not found.</h3>")
+    return HTMLResponse(HTML_PATH.read_text(encoding="utf-8"))
 
 
 @app.post("/api/infer")

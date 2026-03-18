@@ -45,20 +45,49 @@ def _append_event(
     events.append(ev)
 
 
+def _read_non_drum_channels(path: str) -> List[int]:
+    """Return actual MIDI channel numbers for non-drum instruments in first-seen order.
+
+    pretty_midi builds its instrument list in the order channels are first encountered,
+    so this list aligns index-for-index with pretty_midi's non-drum instrument list.
+    Uses mido, which is a hard dependency of pretty_midi.
+    """
+    import mido
+    seen: List[int] = []
+    try:
+        mid = mido.MidiFile(path)
+        for track in mid.tracks:
+            for msg in track:
+                ch = getattr(msg, 'channel', None)
+                if ch is None or ch == 9:  # skip meta messages and drum channel
+                    continue
+                if msg.type in ('note_on', 'note_off') and ch not in seen:
+                    seen.append(ch)
+    except Exception:
+        pass
+    return seen
+
+
 def _parse_notes(
-    midi_data: pretty_midi.PrettyMIDI, split_pitch: int
+    midi_data: pretty_midi.PrettyMIDI, split_pitch: int,
+    midi_channels: List[int] = None,
 ) -> List[NoteEvent]:
-    """Extract NoteEvent list from PrettyMIDI (timestamps in seconds)."""
+    """Extract NoteEvent list from PrettyMIDI (timestamps in seconds).
+
+    midi_channels: actual MIDI channel numbers indexed by non-drum instrument position,
+    obtained via _read_non_drum_channels(). Mirrors C++ PianoRoll::ReadMIDIFile which
+    uses (status_byte % 16) as the channel field written into PIG .txt files.
+    """
     events: List[NoteEvent] = []
     non_drum = [inst for inst in midi_data.instruments if not inst.is_drum]
     has_multiple = len(non_drum) >= 2
 
-    for instrument in non_drum:
+    for inst_idx, instrument in enumerate(non_drum):
         if has_multiple:
-            # Use the actual MIDI channel number, mirroring C++ PianoRoll::ReadMIDIFile
-            # which uses (status_byte % 16) as the channel.
-            # Standard piano MIDIs: channel 0 = right hand, channel 1 = left hand.
-            channel_id = instrument.channel
+            if midi_channels and inst_idx < len(midi_channels):
+                channel_id = midi_channels[inst_idx]
+            else:
+                channel_id = inst_idx  # fallback: assume index == channel
         else:
             channel_id = -1
 
@@ -149,7 +178,8 @@ def parse_midi(
 ) -> List[NoteEvent]:
     """Parse MIDI → NoteEvent list (seconds-based, for model inference)."""
     midi_data = pretty_midi.PrettyMIDI(path)
-    return _parse_notes(midi_data, split_pitch)
+    midi_channels = _read_non_drum_channels(path)
+    return _parse_notes(midi_data, split_pitch, midi_channels)
 
 
 def parse_midi_with_meta(
@@ -157,6 +187,7 @@ def parse_midi_with_meta(
 ) -> Tuple[List[NoteEvent], Dict[str, Any]]:
     """Parse MIDI → (events, rich_meta) for both inference and MusicXML export."""
     midi_data = pretty_midi.PrettyMIDI(path)
-    events = _parse_notes(midi_data, split_pitch)
+    midi_channels = _read_non_drum_channels(path)
+    events = _parse_notes(midi_data, split_pitch, midi_channels)
     meta = _extract_midi_meta(midi_data, events)
     return events, meta
