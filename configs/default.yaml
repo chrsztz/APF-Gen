@@ -16,14 +16,18 @@ data:
 
 model:
   arch: "cnn_bilstm"  # options: cnn_bilstm, transformer
-  hidden_size: 192
+  hidden_size: 128
   cnn_channels: 64
   cnn_layers: 2
   lstm_layers: 2
   dropout: 0.2
   phys_lambda: 0.3
+  transition_lambda: 0.15
   num_classes: 11
   attention: true
+  attn_heads: 4
+  attn_window: 10
+  use_crf: false
   d_model: 128
   nhead: 4
   tf_layers: 2
@@ -50,6 +54,7 @@ decoder:
   beam_size: 5
   alpha: 0.1
   beta: 0.05
+  gamma: 1.0
 
 metrics:
   soft_tolerance: 1

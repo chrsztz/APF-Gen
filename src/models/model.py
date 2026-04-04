@@ -1,23 +1,90 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from src.models.crf import CRF
 
-class Attention(nn.Module):
-    def __init__(self, hidden_dim: int):
+
+class LocalMultiHeadAttention(nn.Module):
+    """Windowed multi-head self-attention.
+
+    Each position attends only to positions within ±window of itself.
+    Uses relative position bias so the model can learn distance-aware patterns.
+    """
+
+    def __init__(self, embed_dim: int, num_heads: int = 4, window: int = 10, dropout: float = 0.1):
         super().__init__()
-        self.proj = nn.Linear(hidden_dim, hidden_dim)
-        self.v = nn.Linear(hidden_dim, 1, bias=False)
+        assert embed_dim % num_heads == 0
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.window = window
 
-    def forward(self, h: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # h: (batch, seq, hidden)
-        scores = self.v(torch.tanh(self.proj(h))).squeeze(-1)  # (batch, seq)
-        scores = scores.masked_fill(~mask, -1e9)
-        weights = torch.softmax(scores, dim=1)
-        context = torch.bmm(weights.unsqueeze(1), h).squeeze(1)  # (batch, hidden)
-        return context, weights
+        self.qkv = nn.Linear(embed_dim, 3 * embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(embed_dim)
+
+        # Learnable relative position bias: 2*window+1 possible relative distances
+        self.rel_pos_bias = nn.Parameter(torch.zeros(num_heads, 2 * window + 1))
+        nn.init.trunc_normal_(self.rel_pos_bias, std=0.02)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            x: (B, T, D)
+            mask: (B, T) bool
+        Returns:
+            out: (B, T, D) — residual + attention output
+            attn_weights: (B, T) — mean attention weight per position (for visualization)
+        """
+        B, T, D = x.shape
+        residual = x
+        x = self.norm(x)
+
+        qkv = self.qkv(x).reshape(B, T, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, H, T, d)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # Scaled dot-product: (B, H, T, T)
+        scale = self.head_dim ** 0.5
+        attn = torch.matmul(q, k.transpose(-2, -1)) / scale  # (B, H, T, T)
+
+        # Build local window mask: position i can attend to j if |i-j| <= window
+        pos = torch.arange(T, device=x.device)
+        dist = (pos.unsqueeze(0) - pos.unsqueeze(1)).abs()  # (T, T)
+        local_mask = dist <= self.window  # (T, T)
+
+        # Add relative position bias
+        rel_idx = (pos.unsqueeze(0) - pos.unsqueeze(1)).clamp(-self.window, self.window) + self.window  # (T, T) in [0, 2w]
+        rel_bias = self.rel_pos_bias[:, rel_idx]  # (H, T, T)
+        attn = attn + rel_bias.unsqueeze(0)  # broadcast over batch
+
+        # Apply local window mask
+        attn = attn.masked_fill(~local_mask.unsqueeze(0).unsqueeze(0), -1e9)
+
+        # Apply padding mask (only mask keys, not queries)
+        pad_mask = mask.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
+        attn = attn.masked_fill(~pad_mask, -1e9)
+
+        attn_weights = torch.softmax(attn, dim=-1)  # (B, H, T, T)
+        # Padded query positions → all-masked rows → NaN after softmax; zero them out
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+        attn_weights = self.dropout(attn_weights)
+
+        out = torch.matmul(attn_weights, v)  # (B, H, T, d)
+        out = out.transpose(1, 2).reshape(B, T, D)  # (B, T, D)
+        out = self.out_proj(out)
+        out = self.dropout(out)
+
+        # Residual connection
+        out = residual + out
+
+        # Return mean attention weight per position for visualization
+        avg_attn = attn_weights.mean(dim=1).mean(dim=-1)  # (B, T)
+        return out, avg_attn
 
 
 class FingeringModel(nn.Module):
@@ -32,12 +99,15 @@ class FingeringModel(nn.Module):
         dropout: float = 0.3,
         num_classes: int = 11,
         use_attention: bool = True,
+        attn_heads: int = 4,
+        attn_window: int = 10,
+        use_crf: bool = False,
     ):
         super().__init__()
         convs = []
         in_ch = input_dim
         for _ in range(cnn_layers):
-            convs.append(nn.Conv1d(in_ch, cnn_channels, kernel_size=3, padding=1))
+            convs.append(nn.Conv1d(in_ch, cnn_channels, kernel_size=7, padding=3))
             convs.append(nn.BatchNorm1d(cnn_channels))
             convs.append(nn.LeakyReLU())
             convs.append(nn.Dropout(dropout))
@@ -51,11 +121,20 @@ class FingeringModel(nn.Module):
             bidirectional=True,
             dropout=dropout if lstm_layers > 1 else 0.0,
         )
+        lstm_out_dim = hidden_size * 2
         self.use_attention = use_attention
-        self.attn = Attention(hidden_size * 2) if use_attention else None
-        attn_out_dim = hidden_size * 4 if use_attention else hidden_size * 2
+        self.local_attn = (
+            LocalMultiHeadAttention(
+                embed_dim=lstm_out_dim,
+                num_heads=attn_heads,
+                window=attn_window,
+                dropout=dropout,
+            )
+            if use_attention
+            else None
+        )
         self.main_head = nn.Sequential(
-            nn.Linear(attn_out_dim, hidden_size),
+            nn.Linear(lstm_out_dim, hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size, num_classes),
@@ -66,6 +145,8 @@ class FingeringModel(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(phys_dim * 2, num_classes),
         )
+        self.use_crf = use_crf
+        self.crf = CRF(num_classes) if use_crf else None
 
     def forward(self, main_feats: torch.Tensor, phys_feats: torch.Tensor, mask: torch.Tensor):
         # main_feats: (batch, seq, input_dim)
@@ -73,17 +154,11 @@ class FingeringModel(nn.Module):
         x = self.conv(x)
         x = x.transpose(1, 2)  # (batch, seq, cnn_channels)
         packed_out, _ = self.lstm(x)
-        if self.use_attention:
-            context, attn_w = self.attn(packed_out, mask)
-            context_expanded = context.unsqueeze(1).expand(-1, packed_out.size(1), -1)
-            fused = torch.cat([packed_out, context_expanded], dim=-1)
+        if self.use_attention and self.local_attn is not None:
+            fused, attn_w = self.local_attn(packed_out, mask)
         else:
             fused = packed_out
             attn_w = torch.zeros_like(mask, dtype=packed_out.dtype)
         main_logits = self.main_head(fused)
         phys_logits = self.phys_head(phys_feats)
         return main_logits, phys_logits, attn_w
-
-
-
-

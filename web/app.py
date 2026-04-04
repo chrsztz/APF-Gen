@@ -5,7 +5,7 @@ from typing import List
 
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from src.data.features import FeatureBuilder
 from src.data.parser import load_pig_dataset
@@ -23,6 +23,19 @@ HTML_PATH = APP_ROOT / "interactive_demo.html"
 
 CONFIG_PATH = os.getenv("PIG_CONFIG", "configs/default.yaml")
 CHECKPOINT_PATH = os.getenv("PIG_CHECKPOINT", "outputs_bi/checkpoints/best.pt")
+
+PRESETS = [
+    {"id": "001", "file": "001-1_fingering.txt", "composer": "Bach", "piece": "Two-part Invention in C major", "notes": 469, "bars": 22},
+    {"id": "017", "file": "017-1_fingering.txt", "composer": "Mozart", "piece": "Piano Sonata K 545, 1st mov.", "notes": 193, "bars": 12},
+    {"id": "023", "file": "023-1_fingering.txt", "composer": "Chopin", "piece": "Nocturne Op. 9 No. 2", "notes": 430, "bars": 13},
+    {"id": "061", "file": "061-1_fingering.txt", "composer": "Beethoven", "piece": "Fur Elise", "notes": 208, "bars": 24},
+    {"id": "065", "file": "065-1_fingering.txt", "composer": "Beethoven", "piece": "Moonlight Sonata, 1st mov.", "notes": 239, "bars": 14},
+    {"id": "037", "file": "037-1_fingering.txt", "composer": "Debussy", "piece": "Clair de Lune", "notes": 79, "bars": 8},
+    {"id": "022", "file": "022-1_fingering.txt", "composer": "Chopin", "piece": "Etude Op. 10 No. 3", "notes": 455, "bars": 21},
+    {"id": "118", "file": "118-1_fingering.txt", "composer": "Joplin", "piece": "The Entertainer", "notes": 345, "bars": 20},
+    {"id": "143", "file": "143-1_fingering.txt", "composer": "Satie", "piece": "Gymnopedie No. 1", "notes": 58, "bars": 12},
+    {"id": "104", "file": "104-1_fingering.txt", "composer": "Liszt", "piece": "Liebestraum No. 3", "notes": 257, "bars": 11},
+]
 
 app = FastAPI(title="PIG Fingering Demo")
 
@@ -73,6 +86,9 @@ def _init_engine():
             dropout=cfg["model"]["dropout"],
             num_classes=cfg["model"]["num_classes"],
             use_attention=cfg["model"]["attention"],
+            attn_heads=cfg["model"].get("attn_heads", 4),
+            attn_window=cfg["model"].get("attn_window", 10),
+            use_crf=cfg["model"].get("use_crf", False),
         ).to(device)
 
     model.load_state_dict(ckpt["model_state"])
@@ -110,6 +126,7 @@ def _predict_finger_indices(events, top_k: int, use_beam: bool) -> List[int]:
                 beam_size=CFG.get("decoder", {}).get("beam_size", 5),
                 alpha=CFG.get("decoder", {}).get("alpha", 0.1),
                 beta=CFG.get("decoder", {}).get("beta", 0.05),
+                gamma=CFG.get("decoder", {}).get("gamma", 1.0),
             )
         else:
             preds_idx = preds_idx.squeeze(0).cpu().tolist()
@@ -171,6 +188,28 @@ def _pig_txt_to_musicxml(txt_bytes: bytes, top_k: int, use_beam: bool) -> str:
             os.remove(tmp_txt_path)
         if tmp_xml_path and os.path.exists(tmp_xml_path):
             os.remove(tmp_xml_path)
+
+
+@app.get("/api/presets")
+def get_presets():
+    return JSONResponse(content=PRESETS)
+
+
+@app.post("/api/infer_preset")
+async def infer_preset(
+    preset_id: str = Form(...),
+    beam: bool = Form(False),
+):
+    preset = next((p for p in PRESETS if p["id"] == preset_id), None)
+    if preset is None:
+        raise HTTPException(status_code=404, detail="Preset not found.")
+    pig_root = Path(CFG["data"]["root"])
+    pig_path = pig_root / preset["file"]
+    if not pig_path.exists():
+        raise HTTPException(status_code=404, detail=f"PIG file not found: {preset['file']}")
+    txt_bytes = pig_path.read_bytes()
+    xml_text = _pig_txt_to_musicxml(txt_bytes, top_k=3, use_beam=beam)
+    return Response(content=xml_text, media_type="application/xml")
 
 
 @app.post("/api/infer_txt")

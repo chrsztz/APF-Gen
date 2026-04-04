@@ -72,6 +72,9 @@ def evaluate(config_path: str, checkpoint: str):
             dropout=cfg["model"]["dropout"],
             num_classes=cfg["model"]["num_classes"],
             use_attention=cfg["model"]["attention"],
+            attn_heads=cfg["model"].get("attn_heads", 4),
+            attn_window=cfg["model"].get("attn_window", 10),
+            use_crf=cfg["model"].get("use_crf", False),
         ).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
@@ -106,34 +109,43 @@ def evaluate(config_path: str, checkpoint: str):
                 midi = batch["midi"]
                 channel = batch["channel"]
                 main_logits, phys_logits, _ = model(main, phys, mask)
-                main_prob = F.softmax(main_logits, dim=-1)
-                phys_prob = F.softmax(phys_logits, dim=-1)
-                combined = (1 - cfg["model"]["phys_lambda"]) * main_prob + cfg["model"]["phys_lambda"] * phys_prob
                 piece_ids = batch["piece_ids"]
-                if cfg.get("decoder", {}).get("use_beam_eval", False):
-                    preds_list = []
-                    for i in range(main.shape[0]):
-                        L = int(batch["lengths"][i].item())
-                        probs_i = combined[i, :L].cpu()
-                        midi_i = midi[i, :L].cpu().tolist()
-                        channel_i = channel[i, :L].cpu().tolist()
-                        seq = beam_search_decode(
-                            probs_i,
-                            midi_i,
-                            channel_i,
-                            beam_size=cfg["decoder"]["beam_size"],
-                            alpha=cfg["decoder"]["alpha"],
-                            beta=cfg["decoder"]["beta"],
-                        )
-                        preds = torch.tensor(seq, device=device, dtype=torch.long)
-                        if L < labels.shape[1]:
-                            pad = torch.full((labels.shape[1] - L,), -100, device=device, dtype=torch.long)
-                            preds = torch.cat([preds, pad], dim=0)
-                        preds_list.append(preds)
-                    preds_tensor = torch.stack(preds_list, dim=0)
-                    preds_for_metrics = preds_tensor
+                crf = getattr(model, "crf", None)
+                if crf is not None:
+                    combined_emit = (1 - cfg["model"]["phys_lambda"]) * main_logits + cfg["model"]["phys_lambda"] * phys_logits
+                    decoded = crf.decode(combined_emit, mask)
+                    preds_for_metrics = torch.full_like(labels, -100)
+                    for i, seq in enumerate(decoded):
+                        preds_for_metrics[i, :len(seq)] = torch.tensor(seq, device=device, dtype=torch.long)
                 else:
-                    preds_for_metrics = combined.argmax(dim=-1)
+                    main_prob = F.softmax(main_logits, dim=-1)
+                    phys_prob = F.softmax(phys_logits, dim=-1)
+                    combined = (1 - cfg["model"]["phys_lambda"]) * main_prob + cfg["model"]["phys_lambda"] * phys_prob
+                    if cfg.get("decoder", {}).get("use_beam_eval", False):
+                        preds_list = []
+                        for i in range(main.shape[0]):
+                            L = int(batch["lengths"][i].item())
+                            probs_i = combined[i, :L].cpu()
+                            midi_i = midi[i, :L].cpu().tolist()
+                            channel_i = channel[i, :L].cpu().tolist()
+                            seq = beam_search_decode(
+                                probs_i,
+                                midi_i,
+                                channel_i,
+                                beam_size=cfg["decoder"]["beam_size"],
+                                alpha=cfg["decoder"]["alpha"],
+                                beta=cfg["decoder"]["beta"],
+                                gamma=cfg["decoder"].get("gamma", 1.0),
+                            )
+                            preds = torch.tensor(seq, device=device, dtype=torch.long)
+                            if L < labels.shape[1]:
+                                pad = torch.full((labels.shape[1] - L,), -100, device=device, dtype=torch.long)
+                                preds = torch.cat([preds, pad], dim=0)
+                            preds_list.append(preds)
+                        preds_tensor = torch.stack(preds_list, dim=0)
+                        preds_for_metrics = preds_tensor
+                    else:
+                        preds_for_metrics = combined.argmax(dim=-1)
 
                 for bi in range(preds_for_metrics.shape[0]):
                     pid = piece_ids[bi]

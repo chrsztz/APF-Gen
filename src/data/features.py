@@ -137,6 +137,8 @@ def basic_features(
             if other.channel == ev.channel and other.onset <= ev.onset < other.offset
         ]
         chord_span = max(same_hand_midis) - min(same_hand_midis) if same_hand_midis else 0
+        prev_interval = ev.midi - prev_same   # signed semitones to prev same-hand note
+        next_interval = next_same - ev.midi   # signed semitones to next same-hand note
         feats.append(
             [
                 ev.midi / 127.0,
@@ -147,8 +149,12 @@ def basic_features(
                 chord_flags[i],
                 chord_sizes[i],
                 chord_span / 48.0,
-                (ev.midi - prev_same) / 12.0,
-                (next_same - ev.midi) / 12.0,
+                prev_interval / 12.0,                          # signed delta pitch (prev)
+                float(np.sign(prev_interval)),                 # direction: -1/0/+1
+                1.0 if 0 < abs(prev_interval) <= 2 else 0.0,  # is_step (semitone or tone)
+                next_interval / 12.0,                          # signed delta pitch (next)
+                float(np.sign(next_interval)),                 # direction: -1/0/+1
+                1.0 if 0 < abs(next_interval) <= 2 else 0.0,  # is_step (semitone or tone)
                 next_onset_gap,
                 beat_frac,
             ]

@@ -19,6 +19,19 @@ from src.utils.midi_io import parse_midi_with_meta
 
 def forward_pass(model, main, phys, mask, phys_lambda, top_k: int):
     main_logits, phys_logits, attn = model(main, phys, mask)
+
+    crf = getattr(model, "crf", None)
+    if crf is not None:
+        # CRF Viterbi decoding on combined emissions
+        combined_emit = (1 - phys_lambda) * main_logits + phys_lambda * phys_logits
+        decoded = crf.decode(combined_emit, mask)
+        # Build preds tensor, also return combined probs for beam search fallback
+        preds = torch.full(main_logits.shape[:2], 0, device=main_logits.device, dtype=torch.long)
+        for bi, seq in enumerate(decoded):
+            preds[bi, :len(seq)] = torch.tensor(seq, device=main_logits.device, dtype=torch.long)
+        combined = F.softmax(combined_emit, dim=-1)
+        return preds, combined, attn
+
     main_prob = F.softmax(main_logits, dim=-1)
     phys_prob = F.softmax(phys_logits, dim=-1)
     combined = (1 - phys_lambda) * main_prob + phys_lambda * phys_prob
@@ -89,6 +102,9 @@ def run_inference(
             dropout=cfg["model"]["dropout"],
             num_classes=cfg["model"]["num_classes"],
             use_attention=cfg["model"]["attention"],
+            attn_heads=cfg["model"].get("attn_heads", 4),
+            attn_window=cfg["model"].get("attn_window", 10),
+            use_crf=cfg["model"].get("use_crf", False),
         ).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
@@ -118,6 +134,7 @@ def run_inference(
                 beam_size=cfg.get("decoder", {}).get("beam_size", 5),
                 alpha=cfg.get("decoder", {}).get("alpha", 0.1),
                 beta=cfg.get("decoder", {}).get("beta", 0.05),
+                gamma=cfg.get("decoder", {}).get("gamma", 1.0),
             )
         else:
             preds_idx = preds_idx.squeeze(0).cpu().tolist()
