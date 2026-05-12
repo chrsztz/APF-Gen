@@ -102,8 +102,13 @@ class FingeringModel(nn.Module):
         attn_heads: int = 4,
         attn_window: int = 10,
         use_crf: bool = False,
+        use_ar: bool = False,
+        ar_embed_dim: int = 16,
     ):
         super().__init__()
+        self.num_classes = num_classes
+        self.use_ar = use_ar
+
         convs = []
         in_ch = input_dim
         for _ in range(cnn_layers):
@@ -133,8 +138,18 @@ class FingeringModel(nn.Module):
             if use_attention
             else None
         )
+
+        # AR: embed previous finger and concatenate with BiLSTM+attn output
+        # Index num_classes = <start> token
+        if use_ar:
+            self.finger_emb = nn.Embedding(num_classes + 1, ar_embed_dim)
+            head_in_dim = lstm_out_dim + ar_embed_dim
+        else:
+            self.finger_emb = None
+            head_in_dim = lstm_out_dim
+
         self.main_head = nn.Sequential(
-            nn.Linear(lstm_out_dim, hidden_size),
+            nn.Linear(head_in_dim, hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size, num_classes),
@@ -148,17 +163,53 @@ class FingeringModel(nn.Module):
         self.use_crf = use_crf
         self.crf = CRF(num_classes) if use_crf else None
 
-    def forward(self, main_feats: torch.Tensor, phys_feats: torch.Tensor, mask: torch.Tensor):
-        # main_feats: (batch, seq, input_dim)
-        x = main_feats.transpose(1, 2)  # (batch, input_dim, seq)
+    def _encode(self, main_feats: torch.Tensor, mask: torch.Tensor):
+        """Shared CNN → BiLSTM → LocalAttn encoder."""
+        x = main_feats.transpose(1, 2)
         x = self.conv(x)
-        x = x.transpose(1, 2)  # (batch, seq, cnn_channels)
-        packed_out, _ = self.lstm(x)
+        x = x.transpose(1, 2)
+        fused, _ = self.lstm(x)
         if self.use_attention and self.local_attn is not None:
-            fused, attn_w = self.local_attn(packed_out, mask)
+            fused, attn_w = self.local_attn(fused, mask)
         else:
-            fused = packed_out
-            attn_w = torch.zeros_like(mask, dtype=packed_out.dtype)
-        main_logits = self.main_head(fused)
+            attn_w = torch.zeros_like(mask, dtype=fused.dtype)
+        return fused, attn_w
+
+    def forward(
+        self,
+        main_feats: torch.Tensor,
+        phys_feats: torch.Tensor,
+        mask: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+    ):
+        """
+        labels: (batch, seq) ground-truth finger indices — only used during training
+                when use_ar=True for teacher forcing. Pass None for inference.
+        """
+        fused, attn_w = self._encode(main_feats, mask)
+
+        if self.use_ar:
+            if labels is not None:
+                # Teacher forcing: shift labels right, prepend <start>
+                B, T = fused.shape[:2]
+                start = torch.full((B, 1), self.num_classes, device=fused.device, dtype=torch.long)
+                prev = torch.cat([start, labels[:, :-1].clamp(min=0)], dim=1)  # (B, T)
+                prev_emb = self.finger_emb(prev)  # (B, T, ar_embed_dim)
+                main_logits = self.main_head(torch.cat([fused, prev_emb], dim=-1))
+            else:
+                # Greedy AR inference: step-by-step
+                B, T = fused.shape[:2]
+                prev_tok = torch.full((B,), self.num_classes, device=fused.device, dtype=torch.long)
+                out_list = []
+                for t in range(T):
+                    prev_emb = self.finger_emb(prev_tok)  # (B, ar_embed_dim)
+                    step_in = torch.cat([fused[:, t], prev_emb], dim=-1)
+                    logit_t = self.main_head(step_in)  # (B, num_classes)
+                    out_list.append(logit_t.unsqueeze(1))
+                    prev_tok = logit_t.argmax(dim=-1)
+                main_logits = torch.cat(out_list, dim=1)
+        else:
+            main_logits = self.main_head(fused)
+
         phys_logits = self.phys_head(phys_feats)
         return main_logits, phys_logits, attn_w

@@ -28,6 +28,8 @@ model:
   attn_heads: 4
   attn_window: 10
   use_crf: false
+  use_ar: true
+  ar_embed_dim: 16
   d_model: 128
   nhead: 4
   tf_layers: 2

@@ -131,6 +131,8 @@ def train(config_path: str):
             attn_heads=cfg["model"].get("attn_heads", 4),
             attn_window=cfg["model"].get("attn_window", 10),
             use_crf=cfg["model"].get("use_crf", False),
+            use_ar=cfg["model"].get("use_ar", False),
+            ar_embed_dim=cfg["model"].get("ar_embed_dim", 16),
         ).to(device)
 
     optimizer = Adam(model.parameters(), lr=cfg["train"]["lr"], weight_decay=cfg["train"]["weight_decay"])
@@ -158,7 +160,8 @@ def train(config_path: str):
             labels = batch["labels"].to(device)
             mask = batch["mask"].to(device)
             optimizer.zero_grad()
-            main_logits, phys_logits, _ = model(main, phys, mask)
+            train_labels = labels if getattr(model, "use_ar", False) else None
+            main_logits, phys_logits, _ = model(main, phys, mask, labels=train_labels)
             crf = getattr(model, "crf", None)
             loss, _, _ = compute_loss(
                 main_logits, phys_logits, labels, mask, cfg["model"]["num_classes"], cfg["model"]["phys_lambda"], crf=crf

@@ -75,6 +75,8 @@ def evaluate(config_path: str, checkpoint: str):
             attn_heads=cfg["model"].get("attn_heads", 4),
             attn_window=cfg["model"].get("attn_window", 10),
             use_crf=cfg["model"].get("use_crf", False),
+            use_ar=cfg["model"].get("use_ar", False),
+            ar_embed_dim=cfg["model"].get("ar_embed_dim", 16),
         ).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()

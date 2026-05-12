@@ -1,1 +1,32 @@
+# Python
 __pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# TensorBoard / training logs
+runs/
+
+# Inference artefacts (keep the directory, ignore generated files)
+outputs/musicxml/*.musicxml
+outputs_bi/musicxml/*.musicxml
+
+# Local editor / IDE
+.idea/
+.vscode/
+.cursor/
+
+# Dataset & external baselines (downloaded by the user, see PIGdata/README.md and SourceCode/README.md)
+PIGdata/FingeringFiles/
+PIGdata/ScorePDF/
+PIGdata/List.csv
+PIGdata/List.pdf
+PIGdata/*.pdf
+SourceCode/Code/
+SourceCode/*.sh
+SourceCode/README.txt
